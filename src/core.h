@@ -57,15 +57,16 @@
 #endif
 
 #ifndef UNUSED
-#define UNUSED(_x)	(void)_x
+#define UNUSED(_x)	(void)(_x)
 #endif
 
 #define MAX_NB_CPUS 12
 #define PKT_QUEUE_SIZE 2048
-#define NB_MBUFS 2048
+#define NB_MBUFS 8192
 #define PKTMBUF_SIZE 16384
 
 #define DEBUG TRUE
+#define OFFLOADING_EVICTION_TEST TRUE
 #define RUN_CACHE_OPTIMIZATION FALSE
 
 #define DELETE_ITEM_PROCESS_CYCLE	10
@@ -147,7 +148,6 @@ struct optim_cache_context {
 	item_queue *ocq;
 };
 
-
 #define DATAPLANE_MAX_OFFLOAD_CHUNK_SIZE (8*1024)
 #define GET_NB_BLK(sz) sz % DATAPLANE_BLOCK_SIZE ? \
 	(sz / DATAPLANE_BLOCK_SIZE) + 1 : \
@@ -183,5 +183,11 @@ struct optim_cache_context {
 } while(0)
 
 #define CAL_HV(k, l) XXH3_64bits((k), (l))
+
+#if OFFLOAD_EVICTION_TEST
+#define TEST_US_SLEEP 3	// BackOff time is 3 seconds 
+#define TEST_BACKOFF_SLEEP() sleep(TEST_US_SLEEP)
+#define TEST_COUNT 3
+#endif
 
 #endif

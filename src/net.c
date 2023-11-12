@@ -2,6 +2,7 @@
 #include "config.h"
 #include "chnk_seq_tbl.h"
 #include "hashtable.h"
+#include "debug.h"
 
 struct eviction_meta_hdr {
 	uint64_t e_hv;
@@ -13,7 +14,7 @@ struct offload_meta_hdr {
 	uint16_t c_seq;
 	uint64_t c_off;
 	uint8_t data[];
-};
+} __rte_packed;
 
 /* Use RB Tree */
 void
@@ -23,7 +24,7 @@ GenerateEvictionPacket(optim_cache_context *oc_ctx, item *ec) {
 	struct rte_ether_hdr *ethh;
 	struct eviction_meta_hdr *emh;
 
-	if (unlikely(!(oc_ctx->tpq->len == PKT_QUEUE_SIZE))) /* This case will never occur */
+	if (unlikely(oc_ctx->tpq->len == PKT_QUEUE_SIZE)) /* This case will never occur */
 		return;
 
 	m = rte_pktmbuf_alloc(oc_ctx->pktmbuf_pool);
@@ -59,7 +60,7 @@ GenerateOffloadPacket(optim_cache_context *oc_ctx, item *oc,
 	ssize_t toRead, n_rd;
 	off_t off = 0;
 
-	if (unlikely(!(oc_ctx->tpq->len == PKT_QUEUE_SIZE))) /* Never occurs */
+	if (unlikely(oc_ctx->tpq->len == PKT_QUEUE_SIZE)) /* Never occurs */
 		return;
 
 	m = rte_pktmbuf_alloc(oc_ctx->pktmbuf_pool);
@@ -69,7 +70,7 @@ GenerateOffloadPacket(optim_cache_context *oc_ctx, item *oc,
 				rte_errno, rte_strerror(rte_errno));
 	}
 
-	m->pkt_len = sizeof(struct rte_ether_hdr) + sizeof(struct eviction_meta_hdr) + f_sz;
+	m->pkt_len = sizeof(struct rte_ether_hdr) + sizeof(struct offload_meta_hdr) + f_sz;
 	m->data_len = m->pkt_len;
 	m->nb_segs = 1;
 	m->next = NULL;
@@ -214,8 +215,14 @@ net_flush_tx_pkts(optim_cache_context *oc_ctx, uint16_t portid, uint16_t qid) {
 		struct rte_mbuf **tx_pkts = oc_ctx->tpq->mq;
 		uint16_t ret;
 
+		struct rte_mbuf *m = tx_pkts[0];
+		struct rte_ether_hdr *ethh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+		struct offload_meta_hdr *omh = (struct offload_meta_hdr *)(ethh + 1);
+
+		LOG_ERROR("%c\n", omh->data[0]);
+
 		while (nb_pkts > 0) {
-			uint16_t toSend =  RTE_MIN(NB_TX_THRESHOLD, nb_pkts);
+			uint16_t toSend = RTE_MIN(NB_TX_THRESHOLD, nb_pkts);
 			do {
 				ret = rte_eth_tx_burst(portid, qid, tx_pkts, toSend);
 				tx_pkts += ret;

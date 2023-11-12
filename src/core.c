@@ -11,6 +11,7 @@
 #include "control_plane.h"
 #include "item_queue.h"
 
+/* static value */
 static private_context *g_private_context[MAX_NB_CPUS] = {NULL};
 static optim_cache_context *g_oc_ctx[MAX_NB_CPUS] = {NULL};
 static rte_atomic32_t nb_tot_requests;
@@ -19,16 +20,43 @@ static cache_method *cm_unoffloaded = NULL;
 static void *offloaded = NULL;
 static void *unoffloaded = NULL;
 static rte_atomic32_t g_nb_optim_cache_tasks;
-
 static bool run_optim_cache = true;
 static pthread_mutex_t mutex_optim_cache = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond_optim_cache = PTHREAD_COND_INITIALIZER;
 static bool is_ready = false;
 
+#if OFFLOADIING_EVICTION_TEST
+/* Test whether the offloading & eviction work well or not */
+static void *OffloadingEvictionTestThread(void *opaque);
+#define RUN_OFFLOADING_EVICTION_TEST(_test_it) do {\
+	int _ret;\
+	pthread_t _test_thread;\
+	_ret = pthread_create(&_test_thread, NULL, OffloadingEvictionTestThread, (_test_it));\
+	if (_ret < 0) {\
+		LOG_ERROR("Fail to create OffloadingEvictionTestThread\n");\
+		exit(EXIT_FAILURE);\
+	}\
+	pthread_join(_test_thread, NULL);\
+	LOG_INFO("Complete Offloading-Eviction Test\n");\
+} while(0)
+#else
+#define RUN_OFFLOADING_EVICTION_TEST(_test_it) UNUSED(_test_it)
+#endif
+
 const static char *o_suffix[] = {
 	".html",
 	".m4s",
 };
+
+/* static function */
+static bool CheckSuffix(const char filename[]);
+static void HeatDataplane(void);
+static optim_cache_context *CreateOptimCachePrivateContext(uint16_t core_index);
+static void DestroyOptimCachePrivateContext(optim_cache_context *oc_ctx);
+static void EvictItems(optim_cache_context *oc_ctx);
+static void OffloadItems(optim_cache_context *oc_ctx);
+static int OptimCache(void *opaque);
+static void SignalToOptimCache(void);
 
 #define CONTROL_PLANE_CONFIG_PATH "config/control_plane.cfg"
 #define MASTER_CORE_INDEX 0
@@ -51,6 +79,52 @@ CheckSuffix(const char filename[]) {
 
 	return false;
 }
+
+#if OFFLOADIING_EVICTION_TEST
+static void *
+OffloadingEvictionTestThread(void *opauqe) {
+	uint32_t nb_blks_before_eviction, nb_blks_after_eviction;
+	uint32_t count = 0;
+	item *test_it = (item *)opaque;
+
+	TEST_BACKOFF_SLEEP();
+
+	while (count < MAX_OFFLOAD_EVICTION_TEST_COUNT) {
+		nb_blks_before_eviction = cache_ctrl_get_free_blocks();
+		fprintf(stderr, "[Before Eviction] \n"
+				"Total Number of Free Blocks = %u\n "
+				"Required Number of Offloading Candidate = %u\n "
+				"Timestamp(ms) = %u\n "
+				"# of reqs = %u\n",
+				nb_blks_before_eviction,
+				GET_NB_BLK(test_it->sv->sz),
+				test_it->vv->ts_ms,
+				test_it->vv->n_requests);
+
+		EvictItems(oc_ctx);
+		TEST_BACKOFF_SLEEP();
+		OffloadItems(oc_ctx);
+
+		nb_blks_after_eviction = cache_ctrl_get_free_blocks();
+
+		fprintf(stderr, "[After Eviction] \n"
+				"Total Number of Free Blocks = %u\n "
+				"Required Number of Offloading Candidate = %u\n "
+				"Timestamp(ms) = %u\n "
+				"# of reqs = %u\n",
+				nb_blks_after_eviction,
+				GET_NB_BLK(test_it->sv->sz),
+				test_it->vv->ts_ms,
+				test_it->vv->n_requests);
+
+		/* Check DPU memory consistency at host */
+		assert(nb_blks_before_eviction == nb_blks_after_eviction);
+		count++;
+	}
+
+	return NULL;
+}
+#endif
 
 static void
 HeatDataplane(void) {
@@ -90,7 +164,6 @@ HeatDataplane(void) {
 				LOG_ERROR("Fail to insert object at hashtable\n");
 				exit(EXIT_FAILURE);
 			}
-
 			oc_ctx = g_oc_ctx[core_index];
 
 			if (cache_ctrl_consume_blocks(ret_it) >= 0) {
@@ -99,12 +172,14 @@ HeatDataplane(void) {
 				item_set_state(ret_it, ITEM_STATE_AT_HOST);
 				cm_unoffloaded->insert(unoffloaded, ret_it);
 			}
+			OffloadItems(oc_ctx);
+
+			RUN_OFFLOADING_EVICTION_TEST(ret_it);
 		}
 
 		closedir(dir);
 	}
 }
-
 
 static optim_cache_context *
 CreateOptimCachePrivateContext(uint16_t core_index) {
@@ -308,8 +383,13 @@ control_plane_setup(void) {
 	rte_atomic32_init(&nb_tot_requests);
 
 	for (i = 0; i < CP_CONFIG.ncpus; i++) {
+		int ret = -1;
 		g_core_index[i] = i;
-		rte_eal_remote_launch(OptimCache, &g_core_index[i], CP_CONFIG.lcore_id[i]);
+		ret = rte_eal_remote_launch(OptimCache, &g_core_index[i], (unsigned)CP_CONFIG.lcore_id[i]);
+		if (ret < 0) {
+			rte_exit(EXIT_FAILURE,
+					"Fail to launch OptimCache (%s)\n", rte_strerror(rte_errno));
+		}
 	}
 
 	do {

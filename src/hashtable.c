@@ -17,10 +17,6 @@ void
 hashtable_create(uint16_t hash_power) 
 {
 	int i;
-	if (hash_power < 15) {
-		LOG_ERROR("hash_power must be > 20, hash_power is set to default value, 20\n");
-		hash_power = 14;
-	}
 
 	ht.n_entry = (1U << hash_power);
 	ht.mask = ht.n_entry - 1;
