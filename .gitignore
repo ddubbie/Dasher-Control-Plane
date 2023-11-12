@@ -1,0 +1,12 @@
+*.swp
+*.swo
+*.out
+test/*
+build/
+util/
+*.*.backup
+src/backup/*
+core
+include/
+lib/
+control_plane.cfg.old

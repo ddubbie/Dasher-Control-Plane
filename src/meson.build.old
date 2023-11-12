@@ -1,0 +1,36 @@
+srv_deps = [
+	dependency('threads'),
+	dependency('libxxhash'),
+]
+
+sources= [
+		'cnic.c',
+		'config.c',
+		'cache.c',
+		'debug.c',
+		'dpdk_io.c',
+		'hashtable.c',
+		'ipc_uds_srv.c',
+		'item.c',
+		'item_mp.c',
+		'item_queue.c',
+		'thread.c',
+		'rb_tree.c',
+		'heap.c',
+		'vector64.c',
+		'cache/hyperbolic.c'
+		]
+
+c_args = [
+	'-march=native',
+	'-g',
+]
+
+executable('control_plane_server',
+		   sources : sources,
+		   dependencies : srv_deps,
+		   c_args : c_args,
+		   link_args : dpdk_ldflags,
+		   include_directories : dpdk_include,
+		   )
+subdir('log')

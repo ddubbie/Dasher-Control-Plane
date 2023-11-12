@@ -1,0 +1,33 @@
+#!/bin/bash
+
+F_PREFIX="sample"
+F_PATH=/srv/offload_test
+
+create_uniform_size_files() {
+
+	NB_FILES=$(($1))
+	F_SZ=$(($2))
+	F_SZ=`expr $F_SZ \* 1024`
+	TOT_SZ=0
+
+	rm ${F_PATH}/*.html
+
+	for (( n=0 ; n<${NB_FILES} ; n++ ));
+	do
+		F_NM=`printf "${F_PATH}/${PREFIX}${2}K_%06g.html" $n`
+		dd if=/dev/urandom of=${F_NM} bs=1024 count=${2} 2> /dev/null
+		TOT_SZ=`expr ${TOT_SZ} + ${F_SZ}`
+		#echo $F_NM
+	done
+
+	printf "Total Size of Files : %10g\n" ${TOT_SZ}
+	printf "Total Number of files : %10g\n" ${NB_FILES}
+}
+
+create_non_uniform_sized_files() {
+	NB_FILES=$(($1))
+}
+
+# Main
+echo $RANDOM
+create_uniform_size_files $1 $2 #"hi" "no"
