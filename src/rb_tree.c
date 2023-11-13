@@ -356,7 +356,7 @@ rb_tree_get_maximum(rb_tree *rt)
 
 inline bool
 rb_tree_is_empty(rb_tree *rt){
-	return !rt->root;
+	return rt->root == &rt->sentinel;
 }
 
 inline item *

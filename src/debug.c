@@ -13,23 +13,32 @@ dump_log(char *filename, int line, char *log, ...) {
 	int ret;
 	size_t log_len;
 
-	ret = sprintf(tmpbuf, "(%10s:%4d) ", filename, line);
-	if (unlikely(ret < 0)) return;
+	if (filename && line >= 0) { 
+		ret = sprintf(tmpbuf, "(%10s:%4d) ", filename, line);
+		if (unlikely(ret < 0)) return;
 
-	log_len = ret;
+		log_len = ret;
 
-	va_start(ap, log);
-	ret = vsprintf(tmpbuf + ret, log, ap);
-	va_end(ap);
+		va_start(ap, log);
+		ret = vsprintf(tmpbuf + ret, log, ap);
+		va_end(ap);
 
-	if (unlikely(ret < 0)) return;
+		if (unlikely(ret < 0)) return;
+		log_len += ret;
 
-	log_len += ret;
+		log_write(tmpbuf, log_len);
 
-	log_write(log, log_len);
+	} else {
+		va_start(ap, log);
+		ret = vsprintf(tmpbuf, log, ap);
+		va_end(ap);
+		log_len = ret;
+		log_write(tmpbuf, log_len);
+	}
 }
 
 void
 debug_teardown(void) {
 	/* TODO */
+	log_teardown();
 }

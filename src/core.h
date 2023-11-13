@@ -66,7 +66,7 @@
 #define PKTMBUF_SIZE 16384
 
 #define DEBUG TRUE
-#define OFFLOADING_EVICTION_TEST TRUE
+#define OFFLOADING_EVICTION_TEST FALSE
 #define RUN_CACHE_OPTIMIZATION FALSE
 
 #define DELETE_ITEM_PROCESS_CYCLE	10
@@ -128,6 +128,7 @@ struct eviction_reply_queue {
 	//rte_spinlock_t sl;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
+	bool proc;
 	uint64_t e_hv[PKT_QUEUE_SIZE];
 };
 
@@ -175,8 +176,8 @@ struct optim_cache_context {
 #define MAX_OFFLOADING_BACKOFF_TIME 500	// ms
 #define OFFLOADING_BACKOFF_TIME 20
 
-#define MAX_EVICTION_BACKOFF_TIME 200 // ms
-#define EVICTION_BACKOFF_TIME 5
+#define MAX_EVICTION_BACKOFF_TIME 500 // ms
+#define EVICTION_BACKOFF_TIME 20
 
 #define GET_CUR_US(us) do {\
 	struct timespec ts_now;\
@@ -192,10 +193,10 @@ struct optim_cache_context {
 
 #define CAL_HV(k, l) XXH3_64bits((k), (l))
 
-#if OFFLOAD_EVICTION_TEST
-#define TEST_US_SLEEP 3	// BackOff time is 3 seconds 
-#define TEST_BACKOFF_SLEEP() sleep(TEST_US_SLEEP)
-#define TEST_COUNT 3
+#if OFFLOADING_EVICTION_TEST
+#define TEST_SEC_SLEEP 2	// BackOff time is 3 seconds 
+#define TEST_BACKOFF_SLEEP() sleep(TEST_SEC_SLEEP)
+#define MAX_TEST_COUNT 3
 #endif
 
 #endif

@@ -26,7 +26,7 @@ static pthread_cond_t cond_optim_cache = PTHREAD_COND_INITIALIZER;
 static bool is_ready = false;
 static bool mtcp_master_thread_ready = false;
 
-#if OFFLOADIING_EVICTION_TEST
+#if OFFLOADING_EVICTION_TEST
 /* Test whether the offloading & eviction work well or not */
 static void *OffloadingEvictionTestThread(void *opaque);
 #define RUN_OFFLOADING_EVICTION_TEST(_test_it) do {\
@@ -81,16 +81,19 @@ CheckSuffix(const char filename[]) {
 	return false;
 }
 
-#if OFFLOADIING_EVICTION_TEST
+#if OFFLOADING_EVICTION_TEST
 static void *
-OffloadingEvictionTestThread(void *opauqe) {
+OffloadingEvictionTestThread(void *opaque) {
 	uint32_t nb_blks_before_eviction, nb_blks_after_eviction;
 	uint32_t count = 0;
+	struct optim_cache_context *oc_ctx = g_oc_ctx[MASTER_CORE_INDEX];
 	item *test_it = (item *)opaque;
 
 	TEST_BACKOFF_SLEEP();
 
-	while (count < MAX_OFFLOAD_EVICTION_TEST_COUNT) {
+	LOG_INFO("Run Offloading-Eviction Test...");
+
+	while (count < MAX_TEST_COUNT) {
 		nb_blks_before_eviction = cache_ctrl_get_free_blocks();
 		fprintf(stderr, "[Before Eviction] \n"
 				"Total Number of Free Blocks = %u\n "
@@ -102,8 +105,14 @@ OffloadingEvictionTestThread(void *opauqe) {
 				test_it->vv->ts_ms,
 				test_it->vv->n_requests);
 
+
+		cm_offloaded->delete(offloaded, test_it);
+		rb_tree_insert(oc_ctx->ec_wait, test_it);
+
 		EvictItems(oc_ctx);
 		TEST_BACKOFF_SLEEP();
+
+		item_enqueue(oc_ctx->ocq, test_it);
 		OffloadItems(oc_ctx);
 
 		nb_blks_after_eviction = cache_ctrl_get_free_blocks();
@@ -117,7 +126,6 @@ OffloadingEvictionTestThread(void *opauqe) {
 				GET_NB_BLK(test_it->sv->sz),
 				test_it->vv->ts_ms,
 				test_it->vv->n_requests);
-
 		/* Check DPU memory consistency at host */
 		assert(nb_blks_before_eviction == nb_blks_after_eviction);
 		count++;
@@ -129,11 +137,11 @@ OffloadingEvictionTestThread(void *opauqe) {
 
 static void
 HeatDataplane(void) {
-
 	int i, ret;
 	DIR *dir;
 	struct dirent *ent;
 	char path_buf[512];
+	uint32_t nb_required_blks;
 	optim_cache_context *oc_ctx;
 
 	for (i = 0; i < (int)CP_CONFIG.nb_dir_path; i++) {
@@ -166,18 +174,18 @@ HeatDataplane(void) {
 				exit(EXIT_FAILURE);
 			}
 			oc_ctx = g_oc_ctx[core_index];
+			nb_required_blks = GET_NB_BLK(ret_it->sv->sz);
 
-			if (cache_ctrl_consume_blocks(ret_it) >= 0) {
+			if (nb_required_blks < cache_ctrl_get_free_blocks()) {
 				item_enqueue(oc_ctx->ocq, ret_it);
 			} else {
 				item_set_state(ret_it, ITEM_STATE_AT_HOST);
 				cm_unoffloaded->insert(unoffloaded, ret_it);
 			}
-			OffloadItems(oc_ctx);
 
+			OffloadItems(oc_ctx);
 			RUN_OFFLOADING_EVICTION_TEST(ret_it);
 		}
-
 		closedir(dir);
 	}
 }
@@ -216,10 +224,10 @@ CreateOptimCachePrivateContext(uint16_t core_index) {
 	if (!oc_ctx->orq) {
 		return NULL;
 	}
-//	rte_spinlock_init(&oc_ctx->orq->sl);
 	pthread_mutex_init(&oc_ctx->orq->mutex, NULL);
 	pthread_cond_init(&oc_ctx->orq->cond, NULL);
 	oc_ctx->orq->len = 0;
+	oc_ctx->orq->proc = false;
 
 	oc_ctx->erq = malloc(sizeof(eviction_reply_queue));
 	if (!oc_ctx->erq) {
@@ -227,8 +235,8 @@ CreateOptimCachePrivateContext(uint16_t core_index) {
 	}
 	pthread_mutex_init(&oc_ctx->erq->mutex, NULL);
 	pthread_cond_init(&oc_ctx->erq->cond, NULL);
-//	rte_spinlock_init(&oc_ctx->erq->sl);
 	oc_ctx->erq->len = 0;
+	oc_ctx->erq->proc = false;
 
 	oc_ctx->rehv = malloc(sizeof(struct rx_e_hv));
 	if (!oc_ctx->rehv)
@@ -250,6 +258,26 @@ CreateOptimCachePrivateContext(uint16_t core_index) {
 static void
 DestroyOptimCachePrivateContext(optim_cache_context *oc_ctx) {
 	/* TODO */
+
+	pthread_mutex_destroy(&oc_ctx->tpq->mutex);
+	free(oc_ctx->tpq);
+
+	free(oc_ctx->rehv);
+
+	pthread_cond_destroy(&oc_ctx->erq->cond);
+	pthread_mutex_destroy(&oc_ctx->erq->mutex);
+	free(oc_ctx->erq);
+
+	pthread_cond_destroy(&oc_ctx->orq->cond);
+	pthread_mutex_destroy(&oc_ctx->orq->mutex);
+	free(oc_ctx->orq);
+
+	rte_mempool_free(oc_ctx->pktmbuf_pool);
+	chnk_seq_tbl_destroy(oc_ctx->oc_wait);
+
+	rb_tree_destroy(oc_ctx->ec_wait);
+
+	free(oc_ctx);
 }
 
 inline static void 
@@ -258,6 +286,10 @@ EvictItems(optim_cache_context *oc_ctx) {
 	while(!rb_tree_is_empty(oc_ctx->oc_wait)) 
 		rb_tree_inorder_traversal(oc_ctx->oc_wait, );*/
 	int i;
+
+	if (rb_tree_is_empty(oc_ctx->ec_wait))
+		return;
+
 	net_send_eviction_message(oc_ctx);
 
 	for (i = 0; i < oc_ctx->erq->len; i++) {
@@ -266,8 +298,8 @@ EvictItems(optim_cache_context *oc_ctx) {
 		it = hashtable_get_with_hv(NULL, oc_ctx->erq->e_hv[i], &state);
 		assert(it);
 		UNUSED(state);
-		cm_unoffloaded->insert(unoffloaded, it);
 		item_set_state(it, ITEM_STATE_AT_HOST);
+		cm_unoffloaded->insert(unoffloaded, it);
 
 		cache_ctrl_free_blocks(it);
 		assert(cache_ctrl_get_free_blocks() >= GET_NB_BLK(it->sv->sz));
@@ -284,8 +316,8 @@ OffloadItems(optim_cache_context *oc_ctx) {
 		int ret;
 		net_send_offloading_message(oc_ctx, oc);
 
-		cm_offloaded->insert(offloaded, oc);
 		item_set_state(oc, ITEM_STATE_AT_NIC);
+		cm_offloaded->insert(offloaded, oc);
 
 		ret = cache_ctrl_consume_blocks(oc);
 		assert(ret >= 0);
@@ -495,9 +527,9 @@ control_plane_enqueue_reply(int core_index, void *pktbuf) {
 		oc_ctx->orq->q[oc_ctx->orq->len].off = omh->off;
 		oc_ctx->orq->len++;
 		//LOG_INFO("Obj(hv=%lu, seq=%u) offloading reply\n", omh->hv, omh->seq);
-		uint64_t ms_now;
+	/*	uint64_t ms_now;
 		GET_CUR_MS(ms_now);
-		LOG_INFO("RECV=%lu\n", ms_now);
+		LOG_INFO("RECV=%lu\n", ms_now);*/
 		pthread_mutex_unlock(&oc_ctx->orq->mutex);
 		//rte_spinlock_unlock(&oc_ctx->orq->sl);
 	} else if (ether_type == ETYPE_EVICTION){
@@ -538,7 +570,6 @@ control_plane_heat_dataplane(void) {
 	do {
 		usleep(1000);
 	} while(!mtcp_master_thread_ready);
-	//sleep(3);
 	HeatDataplane();
 }
 
@@ -554,12 +585,10 @@ control_plane_signal_to_replyq(int core_index) {
 	optim_cache_context *oc_ctx;
 	oc_ctx = g_oc_ctx[core_index];
 
-	if (oc_ctx->erq->len > 0) {
-		//LOG_INFO("Signal to erq\n");
+	if (oc_ctx->erq->len > 0 && !oc_ctx->erq->proc) {
 		pthread_cond_signal(&oc_ctx->erq->cond);
 	} 
 	if (oc_ctx->orq->len > 0 && !oc_ctx->orq->proc)  {
-		//LOG_INFO("Signal to orq\n");
 		pthread_cond_signal(&oc_ctx->orq->cond);
 	}
 }

@@ -239,6 +239,11 @@ HyperbolicCacheGetOffloadingCandidate(hyperbolic_cache *hc)
 
 }
 
+#define DUMP_SAMPLED_SET TRUE
+#if DUMP_SAMPLED_SET
+#else
+#endif
+
 inline static item *
 HyperbolicCacheGetEvictionCandidate(hyperbolic_cache *hc)
 {
@@ -247,7 +252,6 @@ HyperbolicCacheGetEvictionCandidate(hyperbolic_cache *hc)
 	item *ec;
 	uint16_t st;
 	uint32_t refcount;
-	//uint32_t loop_count = HYPERBOLIC_MAX_LOOP_COUNT;
 
 	while (1) {
 		sample_size = RandomlySample(hc);
@@ -266,7 +270,7 @@ HyperbolicCacheGetEvictionCandidate(hyperbolic_cache *hc)
 				item_set_state(ec, ITEM_STATE_AT_NOWHERE);
 				do {
 					refcount = item_get_refcount(ec);
-					//WAIT_FOR_EVICTION();
+					usleep(MSEC_TO_USEC(MAX_EVICTION_BACKOFF_TIME));
 				} while(refcount > 0);
 
 				CompleteBinTreeDelete(hc, ec);
