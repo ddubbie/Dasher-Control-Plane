@@ -112,23 +112,27 @@ inline static void
 ProcessOffloadReplyQueue(optim_cache_context *oc_ctx, item *oc) {
 
 	int i;
-
-	rte_spinlock_lock(&oc_ctx->orq->sl);
+	//pthread_mutex_lock(&oc_ctx->orq->mutex);
+	//rte_spinlock_lock(&oc_ctx->orq->sl);
 
 	for  (i = 0; i < oc_ctx->orq->len; i++) {
 		if (oc->sv->hv != oc_ctx->orq->q[i].hv)
 			continue;
 //		assert(oc->sv->sz == oc_ctx->orq->q[i].sz);
 		chnk_seq_tbl_delete(oc_ctx->oc_wait, oc_ctx->orq->q[i].seq);
+		/*
+		LOG_INFO("Obj(hv=%lu, seq=%u) offloading reply\n", 
+				oc->sv->hv, oc_ctx->orq->q[i].seq);*/
 	}
+	//LOG_INFO("Process all packets\n");
 	oc_ctx->orq->len = 0;
-	rte_spinlock_unlock(&oc_ctx->orq->sl);
+	//pthread_mutex_unlock(&oc_ctx->orq->mutex);
+	//rte_spinlock_unlock(&oc_ctx->orq->sl);
 }
 
 inline static void
 ProcessEvictionReplyQueue(optim_cache_context *oc_ctx) {
 	int i;
-	rte_spinlock_lock(&oc_ctx->erq->sl);
 	for (i = 0; i < oc_ctx->erq->len; i++) {
 		uint16_t state;
 		item *it = hashtable_get_with_hv(NULL, oc_ctx->erq->e_hv[i], &state);
@@ -138,7 +142,6 @@ ProcessEvictionReplyQueue(optim_cache_context *oc_ctx) {
 		memcpy(&oc_ctx->rehv->e_hv, &oc_ctx->erq->e_hv, sizeof(uint64_t) * oc_ctx->erq->len);
 		oc_ctx->rehv->len = oc_ctx->erq->len;
 	}
-	rte_spinlock_unlock(&oc_ctx->erq->sl);
 }
 
 void 
@@ -149,7 +152,9 @@ net_send_eviction_message(optim_cache_context *oc_ctx) {
 
 	while (true) {
 
-		WAIT_FOR_EVICTION();
+		pthread_mutex_lock(&oc_ctx->erq->mutex);
+
+		pthread_cond_wait(&oc_ctx->erq->cond, &oc_ctx->erq->mutex);
 
 		ProcessEvictionReplyQueue(oc_ctx);
 
@@ -157,6 +162,8 @@ net_send_eviction_message(optim_cache_context *oc_ctx) {
 			break;
 
 		rb_tree_inorder_traversal(oc_ctx->ec_wait, GenerateEvictionPacket, oc_ctx);
+
+		pthread_mutex_unlock(&oc_ctx->erq->mutex);
 	}
 }
 
@@ -168,6 +175,7 @@ net_send_offloading_message(optim_cache_context *oc_ctx, item *oc) {
 	size_t f_sz;
 	int f_fd;
 	uint16_t toSend;
+	uint64_t ms_sent, ms_recv; // , ms_temp
 
 	seq = 0;
 
@@ -183,7 +191,7 @@ net_send_offloading_message(optim_cache_context *oc_ctx, item *oc) {
 	f_sz = oc->sv->sz;
 	f_off = 0;
 
-	rte_spinlock_lock(&oc_ctx->tpq->sl);
+	pthread_mutex_lock(&oc_ctx->tpq->mutex);
 	/* Send All Chunks */ 
 	while (f_sz > 0) {
 		toSend = (uint16_t)RTE_MIN(f_sz, DATAPLANE_MAX_OFFLOAD_CHUNK_SIZE);
@@ -193,14 +201,44 @@ net_send_offloading_message(optim_cache_context *oc_ctx, item *oc) {
 		f_off += toSend;
 		seq++;
 	}
-	rte_spinlock_unlock(&oc_ctx->tpq->sl);
 
+	pthread_mutex_unlock(&oc_ctx->tpq->mutex);
+
+	GET_CUR_MS(ms_sent);
+	LOG_INFO("ms_sent=%lu\n", ms_sent);
 	while (true) {
-		usleep(10000);
+		pthread_mutex_lock(&oc_ctx->orq->mutex);
+		pthread_cond_wait(&oc_ctx->orq->cond, &oc_ctx->orq->mutex);
+		oc_ctx->orq->proc = true;
+
+		//GET_CUR_MS(ms_temp);
+		//LOG_INFO("MS DIFF = %lu\n", ms_temp - ms_sent);
 		ProcessOffloadReplyQueue(oc_ctx, oc);
-		if (chnk_seq_tbl_empty(oc_ctx->oc_wait))
+		if (chnk_seq_tbl_empty(oc_ctx->oc_wait)) {
+			oc_ctx->orq->proc = false;
+			pthread_mutex_unlock(&oc_ctx->orq->mutex);
 			break;
+		}
+
+		GET_CUR_MS(ms_recv);
+		if (ms_recv - ms_sent < MAX_OFFLOADING_BACKOFF_TIME) {
+			//LOG_INFO("MS DIFF = %lu\n", ms_recv - ms_sent);
+			usleep(MSEC_TO_USEC(OFFLOADING_BACKOFF_TIME));
+			oc_ctx->orq->proc = false;
+			pthread_mutex_unlock(&oc_ctx->orq->mutex);
+			continue;
+		} 
+
+		//LOG_INFO("MS DIFF = %lu\n", ms_recv - ms_sent);
+		/* Setup chunk sent timestamp (ms)*/
+		GET_CUR_MS(ms_sent);
+
+		pthread_mutex_lock(&oc_ctx->tpq->mutex);
 		chnk_seq_tbl_send_una_chunk(oc_ctx, oc, f_fd);
+		pthread_mutex_unlock(&oc_ctx->tpq->mutex);
+
+		oc_ctx->orq->proc = false;
+		pthread_mutex_unlock(&oc_ctx->orq->mutex);
 	}
 
 	close(f_fd);
@@ -216,10 +254,17 @@ net_flush_tx_pkts(optim_cache_context *oc_ctx, uint16_t portid, uint16_t qid) {
 
 	if (nb_pkts > 0) {
 		struct rte_mbuf **tx_pkts;
-		ret = rte_spinlock_trylock(&oc_ctx->tpq->sl);
-		if (ret < 0)
+		uint64_t ms_now;
+		GET_CUR_MS(ms_now);
+		LOG_INFO("ms_now=%lu\n", ms_now);
+		ret = pthread_mutex_trylock(&oc_ctx->tpq->mutex);
+		if (ret < 0 && errno == EBUSY)	
 			return;
-
+		else if (ret < 0 && errno != EBUSY) {
+			perror("Fail to trylock tx_pkt_queue mutex");
+			exit(EXIT_FAILURE);
+		}
+			
 		LOG_INFO("Flush all packets (nb_pkts=%u)\n", nb_pkts);
 		tx_pkts = oc_ctx->tpq->mq;
 
@@ -233,6 +278,7 @@ net_flush_tx_pkts(optim_cache_context *oc_ctx, uint16_t portid, uint16_t qid) {
 			} while(toSend > 0);
 		}
 		oc_ctx->tpq->len = 0;
-		rte_spinlock_unlock(&oc_ctx->tpq->sl);
+		pthread_mutex_unlock(&oc_ctx->tpq->mutex);
+		//rte_spinlock_unlock(&oc_ctx->tpq->sl);
 	} 
 }

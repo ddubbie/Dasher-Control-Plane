@@ -216,14 +216,18 @@ CreateOptimCachePrivateContext(uint16_t core_index) {
 	if (!oc_ctx->orq) {
 		return NULL;
 	}
-	rte_spinlock_init(&oc_ctx->orq->sl);
+//	rte_spinlock_init(&oc_ctx->orq->sl);
+	pthread_mutex_init(&oc_ctx->orq->mutex, NULL);
+	pthread_cond_init(&oc_ctx->orq->cond, NULL);
 	oc_ctx->orq->len = 0;
 
 	oc_ctx->erq = malloc(sizeof(eviction_reply_queue));
 	if (!oc_ctx->erq) {
 		return NULL;
 	}
-	rte_spinlock_init(&oc_ctx->erq->sl);
+	pthread_mutex_init(&oc_ctx->erq->mutex, NULL);
+	pthread_cond_init(&oc_ctx->erq->cond, NULL);
+//	rte_spinlock_init(&oc_ctx->erq->sl);
 	oc_ctx->erq->len = 0;
 
 	oc_ctx->rehv = malloc(sizeof(struct rx_e_hv));
@@ -233,8 +237,10 @@ CreateOptimCachePrivateContext(uint16_t core_index) {
 	oc_ctx->tpq = malloc(sizeof(struct tx_pkt_queue));
 	if (!oc_ctx->tpq) 
 		return NULL;
-	rte_spinlock_init(&oc_ctx->tpq->sl);
+	//rte_spinlock_init(&oc_ctx->tpq->sl);
 	oc_ctx->tpq->len = 0;
+	pthread_mutex_init(&oc_ctx->tpq->mutex, NULL);
+	//pthread_cond_init(&oc_ctx->tpq->cond, NULL);
 
 	oc_ctx->core_index = core_index;
 
@@ -480,22 +486,29 @@ control_plane_enqueue_reply(int core_index, void *pktbuf) {
 
 	if (ether_type == ETYPE_PAYLOAD_OFFLOAD) {
 		struct rx_offload_meta_hdr *omh;
+		pthread_mutex_lock(&oc_ctx->orq->mutex);
 		omh = (struct rx_offload_meta_hdr *)(ethh + 1);
-		rte_spinlock_lock(&oc_ctx->orq->sl);
+		//rte_spinlock_lock(&oc_ctx->orq->sl);
 		oc_ctx->orq->q[oc_ctx->orq->len].hv = omh->hv;
 		oc_ctx->orq->q[oc_ctx->orq->len].sz = omh->sz;
 		oc_ctx->orq->q[oc_ctx->orq->len].seq = omh->seq;
 		oc_ctx->orq->q[oc_ctx->orq->len].off = omh->off;
 		oc_ctx->orq->len++;
-		LOG_INFO("Obj(hv=%lu, seq=%u) offloading reply\n", omh->hv, omh->seq);
-		rte_spinlock_unlock(&oc_ctx->orq->sl);
+		//LOG_INFO("Obj(hv=%lu, seq=%u) offloading reply\n", omh->hv, omh->seq);
+		uint64_t ms_now;
+		GET_CUR_MS(ms_now);
+		LOG_INFO("RECV=%lu\n", ms_now);
+		pthread_mutex_unlock(&oc_ctx->orq->mutex);
+		//rte_spinlock_unlock(&oc_ctx->orq->sl);
 	} else if (ether_type == ETYPE_EVICTION){
 		uint64_t *e_hv;
-		rte_spinlock_lock(&oc_ctx->erq->sl);
+		pthread_mutex_lock(&oc_ctx->erq->mutex);
+		//rte_spinlock_lock(&oc_ctx->erq->sl);
 		e_hv = (uint64_t *)(ethh + 1);
 		oc_ctx->erq->e_hv[oc_ctx->erq->len] = *e_hv;
 		oc_ctx->erq->len++;
-		rte_spinlock_lock(&oc_ctx->erq->sl);
+		pthread_mutex_unlock(&oc_ctx->erq->mutex);
+		//rte_spinlock_lock(&oc_ctx->erq->sl);
 	}
 }
 
@@ -504,6 +517,7 @@ control_plane_flush_message(int core_index, uint16_t portid, uint16_t qid) {
 
 	optim_cache_context *oc_ctx;
 	oc_ctx = g_oc_ctx[core_index];
+	//uint64_t ms_prev, ms_now;
 //	rte_spinlock_lock(&oc_ctx->tpq->sl);
 	net_flush_tx_pkts(oc_ctx, portid, qid);
 //	rte_spinlock_unlock(&oc_ctx->tpq->sl);
@@ -524,7 +538,7 @@ control_plane_heat_dataplane(void) {
 	do {
 		usleep(1000);
 	} while(!mtcp_master_thread_ready);
-	sleep(3);
+	//sleep(3);
 	HeatDataplane();
 }
 
@@ -532,4 +546,20 @@ void
 control_plane_mtcp_master_thread_ready(void) {
 	mtcp_master_thread_ready = true;
 	LOG_INFO("MTCP Master Thread is Ready\n");
+}
+
+inline void
+control_plane_signal_to_replyq(int core_index) {
+
+	optim_cache_context *oc_ctx;
+	oc_ctx = g_oc_ctx[core_index];
+
+	if (oc_ctx->erq->len > 0) {
+		//LOG_INFO("Signal to erq\n");
+		pthread_cond_signal(&oc_ctx->erq->cond);
+	} 
+	if (oc_ctx->orq->len > 0 && !oc_ctx->orq->proc)  {
+		//LOG_INFO("Signal to orq\n");
+		pthread_cond_signal(&oc_ctx->orq->cond);
+	}
 }

@@ -266,7 +266,7 @@ HyperbolicCacheGetEvictionCandidate(hyperbolic_cache *hc)
 				item_set_state(ec, ITEM_STATE_AT_NOWHERE);
 				do {
 					refcount = item_get_refcount(ec);
-					WAIT_FOR_EVICTION();
+					//WAIT_FOR_EVICTION();
 				} while(refcount > 0);
 
 				CompleteBinTreeDelete(hc, ec);

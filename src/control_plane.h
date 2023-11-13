@@ -41,6 +41,9 @@ void control_plane_heat_dataplane(void);
 
 void control_plane_mtcp_master_thread_ready(void);
 
+/* Signal to Reply queue for processing offloading reply */
+void control_plane_signal_to_replyq(int core_index);
+
 void control_plane_teardown(void);
 
 #endif

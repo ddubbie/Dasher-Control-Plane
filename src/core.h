@@ -102,7 +102,9 @@ typedef struct tx_pkt_queue tx_pkt_queue;
 
 struct tx_pkt_queue {
 	size_t len;
-	rte_spinlock_t sl;
+	pthread_mutex_t mutex;
+	//pthread_cond_t cond;
+//rte_spinlock_t sl;
 	struct rte_mbuf *mq[PKT_QUEUE_SIZE];
 };
 
@@ -115,13 +117,17 @@ struct rx_offload_meta_hdr {
 
 struct offload_reply_queue {
 	size_t len;
-	rte_spinlock_t sl;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
+	bool proc;
 	struct rx_offload_meta_hdr q[PKT_QUEUE_SIZE];
 };
 
 struct eviction_reply_queue {
 	size_t len;
-	rte_spinlock_t sl;
+	//rte_spinlock_t sl;
+	pthread_mutex_t mutex;
+	pthread_cond_t cond;
 	uint64_t e_hv[PKT_QUEUE_SIZE];
 };
 
@@ -146,8 +152,6 @@ struct optim_cache_context {
 	eviction_reply_queue *erq;
 	struct rx_e_hv *rehv;
 	item_queue *ocq;
-	pthread_mutex_t mutex_rxq;
-	ptrhead_cond_t cond_rxq;
 };
 
 #define DATAPLANE_MAX_OFFLOAD_CHUNK_SIZE (8*1024)
@@ -156,12 +160,6 @@ struct optim_cache_context {
 	(sz / DATAPLANE_BLOCK_SIZE)
 
 #define DATAPLANE_BLOCK_SIZE (16 * 1024)
-
-#define US_WAIT_FOR_OFFLOADING	5000	// (us)
-#define WAIT_FOR_OFFLOADING()  usleep(US_WAIT_FOR_OFFLOADING)
-
-#define US_WAIT_FOR_EVICTION 5000 // us
-#define WAIT_FOR_EVICTION() usleep(US_WAIT_FOR_EVICTION) 
 
 #define TO_DECIMAL(s) strtol((s), NULL, 10)
 #define TO_HEXADECIMAL(s) strtol((s), NULL, 16)
@@ -172,6 +170,13 @@ struct optim_cache_context {
 #define NSEC_TO_USEC(s) ((ns) / 1000)
 #define SEC_TO_MSEC(s) ((s) * 1000)
 #define NSEC_TO_MSEC(ns) ((ns) / 1000000)
+#define MSEC_TO_USEC(ms) ((ms) * 1000)
+
+#define MAX_OFFLOADING_BACKOFF_TIME 500	// ms
+#define OFFLOADING_BACKOFF_TIME 20
+
+#define MAX_EVICTION_BACKOFF_TIME 200 // ms
+#define EVICTION_BACKOFF_TIME 5
 
 #define GET_CUR_US(us) do {\
 	struct timespec ts_now;\
