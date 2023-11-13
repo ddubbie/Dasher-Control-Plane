@@ -146,6 +146,8 @@ struct optim_cache_context {
 	eviction_reply_queue *erq;
 	struct rx_e_hv *rehv;
 	item_queue *ocq;
+	pthread_mutex_t mutex_rxq;
+	ptrhead_cond_t cond_rxq;
 };
 
 #define DATAPLANE_MAX_OFFLOAD_CHUNK_SIZE (8*1024)
@@ -155,10 +157,11 @@ struct optim_cache_context {
 
 #define DATAPLANE_BLOCK_SIZE (16 * 1024)
 
-#define US_WAIT_FOR_OFFLOADING	2000	// (us)
-#define WAIT_FOR_OFFLOADING()  usleep(US_WAIT_FOR_OFFLOADING) // Wait for 2ms
-#define US_WAIT_FOR_EVICTION 2000 // us
-#define WAIT_FOR_EVICTION() usleep(US_WAIT_FOR_EVICTION) // Wait for 2ms
+#define US_WAIT_FOR_OFFLOADING	5000	// (us)
+#define WAIT_FOR_OFFLOADING()  usleep(US_WAIT_FOR_OFFLOADING)
+
+#define US_WAIT_FOR_EVICTION 5000 // us
+#define WAIT_FOR_EVICTION() usleep(US_WAIT_FOR_EVICTION) 
 
 #define TO_DECIMAL(s) strtol((s), NULL, 10)
 #define TO_HEXADECIMAL(s) strtol((s), NULL, 16)

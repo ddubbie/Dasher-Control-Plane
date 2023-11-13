@@ -24,6 +24,7 @@ static bool run_optim_cache = true;
 static pthread_mutex_t mutex_optim_cache = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t cond_optim_cache = PTHREAD_COND_INITIALIZER;
 static bool is_ready = false;
+static bool mtcp_master_thread_ready = false;
 
 #if OFFLOADIING_EVICTION_TEST
 /* Test whether the offloading & eviction work well or not */
@@ -396,7 +397,7 @@ control_plane_setup(void) {
 		usleep(1000);
 	} while(!is_ready);
 
-	HeatDataplane();
+	//HeatDataplane();
 }
 
 inline int
@@ -486,6 +487,7 @@ control_plane_enqueue_reply(int core_index, void *pktbuf) {
 		oc_ctx->orq->q[oc_ctx->orq->len].seq = omh->seq;
 		oc_ctx->orq->q[oc_ctx->orq->len].off = omh->off;
 		oc_ctx->orq->len++;
+		LOG_INFO("Obj(hv=%lu, seq=%u) offloading reply\n", omh->hv, omh->seq);
 		rte_spinlock_unlock(&oc_ctx->orq->sl);
 	} else if (ether_type == ETYPE_EVICTION){
 		uint64_t *e_hv;
@@ -515,4 +517,19 @@ control_plane_teardown(void) {
 inline int
 control_plane_get_nb_cpus(void) {
 	return CP_CONFIG.ncpus;
+}
+
+void
+control_plane_heat_dataplane(void) {
+	do {
+		usleep(1000);
+	} while(!mtcp_master_thread_ready);
+	sleep(3);
+	HeatDataplane();
+}
+
+void 
+control_plane_mtcp_master_thread_ready(void) {
+	mtcp_master_thread_ready = true;
+	LOG_INFO("MTCP Master Thread is Ready\n");
 }

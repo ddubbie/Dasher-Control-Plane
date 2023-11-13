@@ -36,5 +36,11 @@ void control_plane_flush_message(int core_index, uint16_t portid, uint16_t qid);
 
 int control_plane_get_nb_cpus(void);
 
+/* Heat dataplane */
+void control_plane_heat_dataplane(void);
+
+void control_plane_mtcp_master_thread_ready(void);
+
 void control_plane_teardown(void);
+
 #endif

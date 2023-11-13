@@ -114,10 +114,11 @@ ProcessOffloadReplyQueue(optim_cache_context *oc_ctx, item *oc) {
 	int i;
 
 	rte_spinlock_lock(&oc_ctx->orq->sl);
+
 	for  (i = 0; i < oc_ctx->orq->len; i++) {
 		if (oc->sv->hv != oc_ctx->orq->q[i].hv)
 			continue;
-		assert(oc->sv->sz == oc_ctx->orq->q[i].sz);
+//		assert(oc->sv->sz == oc_ctx->orq->q[i].sz);
 		chnk_seq_tbl_delete(oc_ctx->oc_wait, oc_ctx->orq->q[i].seq);
 	}
 	oc_ctx->orq->len = 0;
@@ -182,22 +183,22 @@ net_send_offloading_message(optim_cache_context *oc_ctx, item *oc) {
 	f_sz = oc->sv->sz;
 	f_off = 0;
 
+	rte_spinlock_lock(&oc_ctx->tpq->sl);
 	/* Send All Chunks */ 
 	while (f_sz > 0) {
 		toSend = (uint16_t)RTE_MIN(f_sz, DATAPLANE_MAX_OFFLOAD_CHUNK_SIZE);
-		rte_spinlock_lock(&oc_ctx->tpq->sl);
 		GenerateOffloadPacket(oc_ctx, oc, f_fd, toSend, f_off, seq);
-		rte_spinlock_unlock(&oc_ctx->tpq->sl);
 		chnk_seq_tbl_insert(oc_ctx->oc_wait, seq, toSend, f_off);
 		f_sz -= toSend;
 		f_off += toSend;
 		seq++;
 	}
+	rte_spinlock_unlock(&oc_ctx->tpq->sl);
 
 	while (true) {
-		WAIT_FOR_OFFLOADING();
+		usleep(10000);
 		ProcessOffloadReplyQueue(oc_ctx, oc);
-		if (!chnk_seq_tbl_empty(oc_ctx->oc_wait))
+		if (chnk_seq_tbl_empty(oc_ctx->oc_wait))
 			break;
 		chnk_seq_tbl_send_una_chunk(oc_ctx, oc, f_fd);
 	}
@@ -209,17 +210,18 @@ void
 net_flush_tx_pkts(optim_cache_context *oc_ctx, uint16_t portid, uint16_t qid) {
 
 	uint16_t nb_pkts = oc_ctx->tpq->len;
+	int ret;
 
-	rte_spinlock_lock(&oc_ctx->tpq->sl);
+	//LOG_INFO("Flush all packets\n");
+
 	if (nb_pkts > 0) {
-		struct rte_mbuf **tx_pkts = oc_ctx->tpq->mq;
-		uint16_t ret;
+		struct rte_mbuf **tx_pkts;
+		ret = rte_spinlock_trylock(&oc_ctx->tpq->sl);
+		if (ret < 0)
+			return;
 
-		struct rte_mbuf *m = tx_pkts[0];
-		struct rte_ether_hdr *ethh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
-		struct offload_meta_hdr *omh = (struct offload_meta_hdr *)(ethh + 1);
-
-		LOG_ERROR("%c\n", omh->data[0]);
+		LOG_INFO("Flush all packets (nb_pkts=%u)\n", nb_pkts);
+		tx_pkts = oc_ctx->tpq->mq;
 
 		while (nb_pkts > 0) {
 			uint16_t toSend = RTE_MIN(NB_TX_THRESHOLD, nb_pkts);
@@ -230,9 +232,7 @@ net_flush_tx_pkts(optim_cache_context *oc_ctx, uint16_t portid, uint16_t qid) {
 				nb_pkts -= ret;
 			} while(toSend > 0);
 		}
+		oc_ctx->tpq->len = 0;
+		rte_spinlock_unlock(&oc_ctx->tpq->sl);
 	} 
-
-	oc_ctx->tpq->len = 0;
-
-	rte_spinlock_unlock(&oc_ctx->tpq->sl);
 }
